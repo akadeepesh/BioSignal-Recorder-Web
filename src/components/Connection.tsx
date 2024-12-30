@@ -1,9 +1,8 @@
 "use client";
 import React, { useState, useRef, useCallback, useEffect } from "react";
 import { Button } from "./ui/button";
-import { SmoothieChart } from "smoothie";
 import { Input } from "./ui/input";
-
+import { EXGFilter, Notch } from './filters';
 import {
   Cable,
   Circle,
@@ -12,10 +11,21 @@ import {
   Infinity,
   Trash2,
   Download,
+  FileArchive,
   Pause,
   Play,
   Plus,
   Minus,
+  ZoomIn, // For magnify/zoom in functionality
+  ZoomOut, // For zoom out functionality
+  CircleOff,
+  ReplaceAll,
+  Heart,
+  Brain,
+  Eye,
+  BicepsFlexed,
+  ArrowRightToLine,
+  ArrowLeftToLine,
 } from "lucide-react";
 import { BoardsList } from "./boards";
 import { toast } from "sonner";
@@ -26,15 +36,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "./ui/tooltip";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "./ui/select";
 import { BitSelection } from "./DataPass";
-
 import { Separator } from "./ui/separator";
 import {
   Popover,
@@ -42,14 +44,9 @@ import {
   PopoverTrigger,
 } from "../components/ui/popover";
 
-interface FormattedData {
-  timestamp: string;
-  counter: number | null;
-  [key: string]: number | null | string;
-}
-
 interface ConnectionProps {
-  LineData: (data: any) => void;
+  onPauseChange: (pause: boolean) => void; // Callback to pass pause state to parent
+  datastream: (data: number[]) => void;
   Connection: (isConnected: boolean) => void;
   selectedBits: BitSelection;
   setSelectedBits: React.Dispatch<React.SetStateAction<BitSelection>>;
@@ -58,49 +55,108 @@ interface ConnectionProps {
   setCanvasCount: React.Dispatch<React.SetStateAction<number>>; // Specify type for setCanvasCount
   canvasCount: number;
   channelCount: number;
+  currentValue:number;
+  setCurrentValue: React.Dispatch<React.SetStateAction<number>>;
+  SetZoom: React.Dispatch<React.SetStateAction<number>>;
+  SetcurrentSnapshot: React.Dispatch<React.SetStateAction<number>>;
+  currentSnapshot: number;
+  Zoom: number;
+  snapShotRef: React.RefObject<boolean[]>;
 }
 
 const Connection: React.FC<ConnectionProps> = ({
-  LineData,
+  onPauseChange,
+  datastream,
   Connection,
-  selectedBits,
   setSelectedBits,
   isDisplay,
   setIsDisplay,
   setCanvasCount,
   canvasCount,
+  SetcurrentSnapshot,
+  currentSnapshot,
+  snapShotRef,
+  SetZoom,
+  Zoom,
+  currentValue,
+  setCurrentValue,
 }) => {
   const [isConnected, setIsConnected] = useState<boolean>(false); // State to track if the device is connected
   const isConnectedRef = useRef<boolean>(false); // Ref to track if the device is connected
   const isRecordingRef = useRef<boolean>(false); // Ref to track if the device is recording
   const [isEndTimePopoverOpen, setIsEndTimePopoverOpen] = useState(false);
   const [detectedBits, setDetectedBits] = useState<BitSelection | null>(null); // State to store the detected bits
-  const [isRecordButtonDisabled, setIsRecordButtonDisabled] = useState(false); // New state variable
-  const [datasets, setDatasets] = useState<string[][][]>([]); // State to store the recorded datasets
-  const [hasData, setHasData] = useState(false);
-  const [recData, setrecData] = useState(false);
-  const [elapsedTime, setElapsedTime] = useState<number>(0); // State to store the recording duration
-  const timerIntervalRef = useRef<NodeJS.Timeout | null>(null); // Type for Node.js environment
-  const recordingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const detectedBitsRef = React.useRef<BitSelection>("ten");
+  const [datasets, setDatasets] = useState<any[]>([]);
+  const currentFilenameRef = useRef<string>("");
+  const [isRecordButtonDisabled, setIsRecordButtonDisabled] = useState(false);
+  const [recordingElapsedTime, setRecordingElapsedTime] = useState<number>(0); // State to store the recording duration
+  const recordingStartTime = useRef<number>(0);
   const [customTime, setCustomTime] = useState<string>(""); // State to store the custom stop time input
+  const [clickCount, setClickCount] = useState(0); // Track how many times the left arrow is clicked
   const endTimeRef = useRef<number | null>(null); // Ref to store the end time of the recording
-  const startTimeRef = useRef<number | null>(null); // Ref to store the start time of the recording
-  const bufferRef = useRef<string[][]>([]); // Ref to store the data temporary buffer during recording
-  const chartRef = useRef<SmoothieChart[]>([]); // Define chartRef using useRef
+  const [popoverVisible, setPopoverVisible] = useState(false);
   const portRef = useRef<SerialPort | null>(null); // Ref to store the serial port
-  const indexedDBRef = useRef<IDBDatabase | null>(null);
   const [ifBits, setifBits] = useState<BitSelection>("auto");
   const [showAllChannels, setShowAllChannels] = useState(false);
+  const [FullZoom, setFullZoom] = useState(false);
+  const canvasnumbersRef = useRef<number>(1);
   const readerRef = useRef<
     ReadableStreamDefaultReader<Uint8Array> | null | undefined
   >(null); // Ref to store the reader for the serial port
   const writerRef = useRef<WritableStreamDefaultWriter<Uint8Array> | null>(
     null
   );
+  const buffer: number[] = []; // Buffer to store incoming data
+  const [isFilterPopoverOpen, setIsFilterPopoverOpen] = useState(false);
+  const NUM_BUFFERS = 4;
+  const MAX_BUFFER_SIZE = 500;
+  const recordingBuffers = Array(NUM_BUFFERS)
+    .fill(null)
+    .map(() => [] as number[][]);
+  const fillingindex = useRef<number>(0); // Initialize useRef with 0
 
+  let activeBufferIndex = 0;
+  const togglePause = () => {
+    const newPauseState = !isDisplay;
+    setIsDisplay(newPauseState);
+    onPauseChange(newPauseState); // Notify parent about the change
+    SetcurrentSnapshot(0);
+    setClickCount(0);
+
+  };
   const increaseCanvas = () => {
-    if (canvasCount < 6) {
+    if (canvasCount < (detectedBitsRef.current == "twelve" ? 3 : 6)) {
       setCanvasCount(canvasCount + 1); // Increase canvas count up to 6
+    }
+  };
+
+  const increaseValue = () => {
+    if(currentValue < 10){
+      setCurrentValue(currentValue + 1);
+    }
+  };
+
+  const enabledClicks = (snapShotRef.current?.filter(Boolean).length ?? 0) - 1;
+
+  // Enable/Disable left arrow button
+  const handlePrevSnapshot = () => {
+    if (clickCount < enabledClicks) {
+      setClickCount(clickCount + 1);
+    }
+
+    if (currentSnapshot < 4) {
+      SetcurrentSnapshot(currentSnapshot + 1);
+    }
+  };
+
+  // Handle right arrow click (reset count and disable button if needed)
+  const handleNextSnapshot = () => {
+    if (clickCount > 0) {
+      setClickCount(clickCount - 1); // Reset count after right arrow click
+    }
+    if (currentSnapshot > 0) {
+      SetcurrentSnapshot(currentSnapshot - 1);
     }
   };
 
@@ -109,15 +165,46 @@ const Connection: React.FC<ConnectionProps> = ({
       setCanvasCount(canvasCount - 1); // Decrease canvas count but not below 1
     }
   };
+  const decreaseValue = () => {
+    if(currentValue > 1){
+      setCurrentValue(currentValue - 1);
+    }
+  };
+
   const toggleShowAllChannels = () => {
-    if (canvasCount === 6) {
+    if (canvasCount === (detectedBitsRef.current == "twelve" ? 3 : 6)) {
       setCanvasCount(1); // If canvasCount is 6, reduce it to 1
       setShowAllChannels(false);
     } else {
-      setCanvasCount(6); // Otherwise, show all 6 canvases
+      setCanvasCount(detectedBitsRef.current == "twelve" ? 3 : 6); // Otherwise, show all 6 canvases
       setShowAllChannels(true);
     }
   };
+
+  const increaseZoom = () => {
+    if (Zoom < 10) {
+      SetZoom(Zoom + 1); // Increase canvas count up to 6
+    }
+  };
+
+  const decreaseZoom = () => {
+    if (Zoom > 1) {
+      SetZoom(Zoom - 1); // Decrease canvas count but not below 1
+    }
+  };
+  const toggleZoom = () => {
+    if (Zoom === 10) {
+      SetZoom(1); // If canvasCount is 6, reduce it to 1
+      setFullZoom(false);
+    } else {
+      SetZoom(10); // Otherwise, show all 6 canvases
+      setFullZoom(true);
+    }
+  };
+
+  useEffect(() => {
+    canvasnumbersRef.current = canvasCount; // Sync the ref with the state
+  }, [canvasCount, isRecordingRef]);
 
   const handleTimeSelection = (minutes: number | null) => {
     // Function to handle the time selection
@@ -126,8 +213,8 @@ const Connection: React.FC<ConnectionProps> = ({
       toast.success("Recording set to no time limit");
     } else {
       // If the time is not null, set the end time
-      const newEndTimeSeconds = minutes * 60;
-      if (newEndTimeSeconds <= elapsedTime) {
+      const newEndTimeSeconds = minutes * 60 * 1000;
+      if (newEndTimeSeconds <= recordingElapsedTime) {
         // Check if the end time is greater than the current elapsed time
         toast.error("End time must be greater than the current elapsed time");
       } else {
@@ -136,6 +223,96 @@ const Connection: React.FC<ConnectionProps> = ({
       }
     }
   };
+
+  //////////////////////////////////
+  const workerRef = useRef<Worker | null>(null);
+
+  const initializeWorker = () => {
+    if (!workerRef.current) {
+      workerRef.current = new Worker(new URL('../../workers/indexedDBWorker.ts', import.meta.url), {
+        type: 'module',
+      });
+    }
+  };
+  const setCanvasCountInWorker = (canvasCount:number) => {
+    if (!workerRef.current) {
+      initializeWorker();
+    }
+    // Send canvasCount independently to the worker
+    workerRef.current?.postMessage({ action: 'setCanvasCount', canvasCount: canvasnumbersRef.current });
+  };
+  setCanvasCountInWorker(canvasnumbersRef.current);
+
+  const processBuffer = async (bufferIndex: number, canvasCount: number) => {
+    if (!workerRef.current) {
+      initializeWorker();
+    }
+
+    // If the buffer is empty, return early
+    if (recordingBuffers[bufferIndex].length === 0) return;
+
+    const data = recordingBuffers[bufferIndex];
+    const filename = currentFilenameRef.current;
+
+    if (filename) {
+      // Check if the record already exists
+      workerRef.current?.postMessage({ action: 'checkExistence', filename, canvasCount });
+      writeToIndexedDB(data, filename, canvasCount);
+    }
+  };
+
+  const writeToIndexedDB = (data: number[][], filename: string, canvasCount: number) => {
+    workerRef.current?.postMessage({ action: 'write', data, filename, canvasCount });
+  };
+
+  const saveAllDataAsZip = async () => {
+    try {
+      if (workerRef.current) {
+        workerRef.current.postMessage({ action: 'saveAsZip', canvasCount });
+
+        workerRef.current.onmessage = async (event) => {
+          const { zipBlob, error } = event.data;
+
+          if (zipBlob) {
+            saveAs(zipBlob, 'ChordsWeb.zip');
+          } else if (error) {
+            console.error(error);
+          }
+        };
+      }
+    } catch (error) {
+      console.error('Error while saving ZIP file:', error);
+    }
+  };
+
+  // Function to handle saving data by filename
+  const saveDataByFilename = async (filename: string, canvasCount: number) => {
+    if (workerRef.current) {
+      workerRef.current.postMessage({ action: "saveDataByFilename", filename, canvasCount });
+      workerRef.current.onmessage = (event) => {
+        const { blob, error } = event.data;
+
+        if (blob) {
+          saveAs(blob, filename); // FileSaver.js
+          toast.success("File downloaded successfully.");
+        } else (error: any) => {
+          console.error("Worker error:", error);
+          toast.error(`Error during file download: ${error.message}`);
+        }
+      };
+
+      workerRef.current.onerror = (error) => {
+        console.error("Worker error:", error);
+        toast.error("An unexpected worker error occurred.");
+      };
+    } else {
+      console.error("Worker reference is null.");
+      toast.error("Worker is not available.");
+    }
+
+  };
+
+  //////////////////////////////////////////
 
   const handleCustomTimeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     // Function to handle the custom time input change
@@ -160,7 +337,6 @@ const Connection: React.FC<ConnectionProps> = ({
       if (!info || !info.usbVendorId) {
         return "Port with no info";
       }
-      // console.log(info);
 
       // First, check if the board exists in BoardsList
       const board = BoardsList.find(
@@ -169,7 +345,8 @@ const Connection: React.FC<ConnectionProps> = ({
       if (board) {
         setifBits(board.bits as BitSelection);
         setSelectedBits(board.bits as BitSelection);
-        return `${board.name} | Product ID: ${info.usbProductId}`; // Return the board name and product ID
+        detectedBitsRef.current = board.bits as BitSelection;
+        return (<>{board.name} <br /> Product ID: {info.usbProductId}</>); // Return the board name and product ID
       }
 
       setDetectedBits(null);
@@ -186,12 +363,79 @@ const Connection: React.FC<ConnectionProps> = ({
     }
   };
 
+  interface SavedDevice {
+    usbVendorId: number;
+    usbProductId: number;
+    baudRate: number;
+  }
+
   const connectToDevice = async () => {
     try {
-      const port = await navigator.serial.requestPort(); // Request the serial port
-      await port.open({ baudRate: 230400 });
-      Connection(true); // Set the connection state to true, enabling the data visualization
+      if (portRef.current && portRef.current.readable) {
+        await disconnectDevice();
+      }
+
+      const savedPorts: SavedDevice[] = JSON.parse(localStorage.getItem('savedDevices') || '[]');
+      let port: SerialPort | null = null;
+      let baudRate = 230400; // Default baud rate
+
+      const ports = await navigator.serial.getPorts();
+
+      if (savedPorts.length > 0) {
+        port = ports.find(p => {
+          const info = p.getInfo();
+          return savedPorts.some(saved =>
+            saved.usbVendorId === (info.usbVendorId ?? 0) && saved.usbProductId === (info.usbProductId ?? 0)
+          );
+        }) || null;
+      }
+
+      if (!port) {
+        port = await navigator.serial.requestPort();
+        const newPortInfo = await port.getInfo();
+
+
+        const usbVendorId = newPortInfo.usbVendorId ?? 0;
+        const usbProductId = newPortInfo.usbProductId ?? 0;
+
+        // Check for specific usbProductId 29987 and set baud rate
+        if (usbProductId === 29987) {
+          baudRate = 115200;
+
+        }
+
+        const existingDevice = savedPorts.find(saved =>
+          saved.usbVendorId === usbVendorId && saved.usbProductId === usbProductId
+        );
+
+        if (!existingDevice) {
+          savedPorts.push({
+            usbVendorId,
+            usbProductId,
+            baudRate
+          });
+          localStorage.setItem('savedDevices', JSON.stringify(savedPorts));
+          console.log(`New device saved: Vendor ${usbVendorId}, Product ${usbProductId}, Baud Rate ${baudRate}`);
+        }
+
+        await port.open({ baudRate });
+      } else {
+        const portInfo = port.getInfo();
+        const usbProductId = portInfo.usbProductId ?? 0;
+
+        // Check again if the port has productId 29987
+        if (usbProductId === 29987) {
+          baudRate = 115200;
+        }
+
+        await port.open({ baudRate });
+      }
+
+      Connection(true);
       setIsConnected(true);
+      onPauseChange(true);
+      setIsDisplay(true);
+      setCanvasCount(1);
       isConnectedRef.current = true;
       portRef.current = port;
 
@@ -199,19 +443,16 @@ const Connection: React.FC<ConnectionProps> = ({
         description: (
           <div className="mt-2 flex flex-col space-y-1">
             <p>Device: {formatPortInfo(port.getInfo())}</p>
-            <p>Baud Rate: 230400</p>
+            <p>Baud Rate: {baudRate}</p>
           </div>
         ),
       });
-
-      // Get the reader from the port
       const reader = port.readable?.getReader();
       readerRef.current = reader;
 
-      // Get the writer from the port (check if it's available)
       const writer = port.writable?.getWriter();
       if (writer) {
-        setTimeout(function () {
+        setTimeout(() => {
           writerRef.current = writer;
           const message = new TextEncoder().encode("START\n");
           writerRef.current.write(message);
@@ -219,81 +460,174 @@ const Connection: React.FC<ConnectionProps> = ({
       } else {
         console.error("Writable stream not available");
       }
-
-      // Start reading the data from the device
+      const data = await getFileCountFromIndexedDB();
+      setDatasets(data); // Update datasets with the latest data
       readData();
-
-      // Request the wake lock to keep the screen on
       await navigator.wakeLock.request("screen");
+
     } catch (error) {
-      // If there is an error during connection, disconnect the device
-      disconnectDevice();
-      isConnectedRef.current = false;
-      setIsConnected(false);
+      await disconnectDevice();
       console.error("Error connecting to device:", error);
+      toast.error("Failed to connect to device.");
     }
   };
 
+
+  const getFileCountFromIndexedDB = async (): Promise<any[]> => {
+    if (!workerRef.current) {
+      initializeWorker();
+    }
+
+    return new Promise((resolve, reject) => {
+      if (workerRef.current) {
+        workerRef.current.postMessage({ action: 'getFileCountFromIndexedDB' });
+
+        workerRef.current.onmessage = (event) => {
+          if (event.data.allData) {
+            resolve(event.data.allData);
+          } else if (event.data.error) {
+            reject(event.data.error);
+          }
+        };
+
+        workerRef.current.onerror = (error) => {
+          reject(`Error in worker: ${error.message}`);
+        };
+      } else {
+        reject('Worker is not initialized');
+      }
+    });
+  };
+
   const disconnectDevice = async (): Promise<void> => {
-    // Function to disconnect the device
     try {
-      if (portRef.current && portRef.current.readable) {
-        // Check if the writer is available to send the STOP command
+      if (portRef.current) {
         if (writerRef.current) {
-          const stopMessage = new TextEncoder().encode("STOP\n"); // Prepare the STOP command
-          console.log(stopMessage);
-          await writerRef.current.write(stopMessage); // Send the STOP command to the device
-          writerRef.current.releaseLock();
-          writerRef.current = null; // Reset the writer reference
+          const stopMessage = new TextEncoder().encode("STOP\n");
+          try {
+            await writerRef.current.write(stopMessage);
+          } catch (error) {
+            console.error("Failed to send STOP command:", error);
+          }
+          if (writerRef.current) {
+            writerRef.current.releaseLock();
+            writerRef.current = null;
+          }
         }
-
-        // Cancel the reader to stop data flow
+        snapShotRef.current?.fill(false);
         if (readerRef.current) {
-          await readerRef.current.cancel(); // Cancel the reader
-          readerRef.current.releaseLock();
-          readerRef.current = null; // Reset the reader reference
+          try {
+            await readerRef.current.cancel();
+          } catch (error) {
+            console.error("Failed to cancel reader:", error);
+          }
+          if (readerRef.current) {
+            readerRef.current.releaseLock();
+            readerRef.current = null;
+          }
         }
 
-        await portRef.current.close(); // Close the port to disconnect the device
+        // Close port
+        if (portRef.current.readable) {
+          await portRef.current.close();
+        }
         portRef.current = null;
 
-        // Notify the user of successful disconnection with a reconnect option
         toast("Disconnected from device", {
           action: {
             label: "Reconnect",
-            onClick: () => connectToDevice(), // Reconnect when the "Reconnect" button is clicked
+            onClick: () => connectToDevice(),
           },
         });
       }
     } catch (error) {
-      // Handle any errors that occur during disconnection
       console.error("Error during disconnection:", error);
     } finally {
-      // Ensure the connection state is properly updated
-      setIsConnected(false); // Update state to indicate the device is disconnected
-      Connection(false);
+      setIsConnected(false);
       isConnectedRef.current = false;
-      isRecordingRef.current = false; // Ensure recording is stopped
+      isRecordingRef.current = false;
+      Connection(false);
     }
+  };
+  const appliedFiltersRef = React.useRef<{ [key: number]: number }>({});
+  const appliedEXGFiltersRef = React.useRef<{ [key: number]: number }>({});
+  const [, forceUpdate] = React.useReducer((x) => x + 1, 0);
+  const [, forceEXGUpdate] = React.useReducer((x) => x + 1, 0);
+
+  const removeEXGFilter = (channelIndex: number) => {
+    delete appliedEXGFiltersRef.current[channelIndex]; // Remove the filter for the channel
+    forceEXGUpdate(); // Trigger re-render
+
+  };
+
+  // Function to handle frequency selection
+  const handleFrequencySelectionEXG = (channelIndex: number, frequency: number) => {
+    appliedEXGFiltersRef.current[channelIndex] = frequency; // Update the filter for the channel
+    forceEXGUpdate(); //Trigger re-render
+
+  };
+
+  // Function to set the same filter for all channels
+  const applyEXGFilterToAllChannels = (channels: number[], frequency: number) => {
+    channels.forEach((channelIndex) => {
+      appliedEXGFiltersRef.current[channelIndex] = frequency; // Set the filter for the channel
+    });
+    forceEXGUpdate(); // Trigger re-render
+
+  };
+  // Function to remove the filter for all channels
+  const removeEXGFilterFromAllChannels = (channels: number[]) => {
+    channels.forEach((channelIndex) => {
+      delete appliedEXGFiltersRef.current[channelIndex]; // Remove the filter for the channel
+    });
+    forceEXGUpdate(); // Trigger re-render
+
+  };
+  const removeNotchFilter = (channelIndex: number) => {
+    delete appliedFiltersRef.current[channelIndex]; // Remove the filter for the channel
+    forceUpdate(); // Trigger re-render
+  };
+  // Function to handle frequency selection
+  const handleFrequencySelection = (channelIndex: number, frequency: number) => {
+    appliedFiltersRef.current[channelIndex] = frequency; // Update the filter for the channel
+    forceUpdate(); //Trigger re-render
+  };
+
+  // Function to set the same filter for all channels
+  const applyFilterToAllChannels = (channels: number[], frequency: number) => {
+    channels.forEach((channelIndex) => {
+      appliedFiltersRef.current[channelIndex] = frequency; // Set the filter for the channel
+    });
+    forceUpdate(); // Trigger re-render
+  };
+
+  // Function to remove the filter for all channels
+  const removeNotchFromAllChannels = (channels: number[]) => {
+    channels.forEach((channelIndex) => {
+      delete appliedFiltersRef.current[channelIndex]; // Remove the filter for the channel
+    });
+    forceUpdate(); // Trigger re-render
   };
 
   // Function to read data from a connected device and process it
   const readData = async (): Promise<void> => {
-    let bufferIndex = 0; // Index for tracking the current position in the buffer
-    const buffer: number[] = []; // Buffer to store incoming data
     const HEADER_LENGTH = 3; // Length of the packet header
-    const NUM_CHANNELS = 6; // Number of channels in the data packet
-    const PACKET_LENGTH = 16; // Total length of each packet
+    const NUM_CHANNELS = detectedBitsRef.current == "twelve" ? 3 : 6; // Number of channels in the data packet
+    const PACKET_LENGTH = detectedBitsRef.current == "twelve" ? 10 : 16; // Total length of each packet
     const SYNC_BYTE1 = 0xc7; // First synchronization byte to identify the start of a packet
     const SYNC_BYTE2 = 0x7c; // Second synchronization byte
     const END_BYTE = 0x01; // End byte to signify the end of a packet
     let previousCounter: number | null = null; // Variable to store the previous counter value for loss detection
-    let hasRemovedInitialElements = false; // Flag to track if initial elements have been removed
-
+    const notchFilters = Array.from({ length: 6 }, () => new Notch());
+    const EXGFilters = Array.from({ length: 6 }, () => new EXGFilter());
+    notchFilters.forEach((filter) => {
+      filter.setSample(detectedBitsRef.current); // Set the sample value for all instances
+    });
+    EXGFilters.forEach((filter) => {
+      filter.setSample(detectedBitsRef.current); // Set the sample value for all instances
+    });
     try {
-      // Loop while the device is connected
       while (isConnectedRef.current) {
-        // Loop while the device is connected
         const streamData = await readerRef.current?.read(); // Read data from the device
         if (streamData?.done) {
           // Check if the data stream has ended
@@ -330,20 +664,48 @@ const Connection: React.FC<ConnectionProps> = ({
             ) {
               // Validate the packet by checking the sync and end bytes
               const packet = buffer.slice(syncIndex, syncIndex + PACKET_LENGTH); // Extract the packet from the buffer
-              const channelData: string[] = []; // Array to store the extracted channel data
-              for (let channel = 0; channel < NUM_CHANNELS; channel++) {
-                // Loop through each channel in the packet
-                const highByte = packet[channel * 2 + HEADER_LENGTH]; // Extract the high byte for the channel
-                const lowByte = packet[channel * 2 + HEADER_LENGTH + 1]; // Extract the low byte for the channel
-                const value = (highByte << 8) | lowByte; // Combine high and low bytes to get the channel value
-                channelData.push(value.toString()); // Convert the value to string and store it in the array
-              }
+              const channelData: number[] = []; // Array to store the extracted channel data
               const counter = packet[2]; // Extract the counter value from the packet
-              channelData.push(counter.toString()); // Add the counter to the channel data
-              LineData(channelData); // Pass the channel data to the LineData function for further processing
+              channelData.push(counter); // Add the counter to the channel data
+              for (let channel = 0; channel < NUM_CHANNELS; channel++) {
+                const highByte = packet[channel * 2 + HEADER_LENGTH];
+                const lowByte = packet[channel * 2 + HEADER_LENGTH + 1];
+                const value = (highByte << 8) | lowByte;
+
+                channelData.push(
+                  notchFilters[channel].process(
+                    EXGFilters[channel].process(
+                      value,
+                      appliedEXGFiltersRef.current[channel]
+                    ),
+                    appliedFiltersRef.current[channel]
+                  )
+                );
+
+              }
+              datastream(channelData); // Pass the channel data to the LineData function for further processing
               if (isRecordingRef.current) {
+                const channeldatavalues = channelData
+                  .slice(0, canvasnumbersRef.current + 1)
+                  .map((value) => (value !== undefined ? value : null))
+                  .filter((value): value is number => value !== null); // Filter out null values
                 // Check if recording is enabled
-                bufferRef.current.push(channelData); // Store the channel data in the recording buffer
+                recordingBuffers[activeBufferIndex][fillingindex.current] = channeldatavalues;
+
+                if (fillingindex.current >= MAX_BUFFER_SIZE - 1) {
+                  processBuffer(activeBufferIndex, canvasnumbersRef.current);
+                  activeBufferIndex = (activeBufferIndex + 1) % NUM_BUFFERS;
+                }
+                fillingindex.current = (fillingindex.current + 1) % MAX_BUFFER_SIZE;
+                const elapsedTime = Date.now() - recordingStartTime.current;
+                setRecordingElapsedTime((prev) => {
+                  if (endTimeRef.current !== null && elapsedTime >= endTimeRef.current) {
+                    stopRecording();
+                    return endTimeRef.current;
+                  }
+                  return elapsedTime;
+                });
+
               }
 
               if (previousCounter !== null) {
@@ -373,361 +735,191 @@ const Connection: React.FC<ConnectionProps> = ({
     }
   };
 
-  // Function to convert data to CSV format
-  const convertToCSV = (data: FormattedData[]): string => {
-    if (data.length === 0) return "";
-
-    const header = Object.keys(data[0]);
-    const rows = data.map((item) =>
-      header
-        .map((fieldName) =>
-          item[fieldName] !== undefined && item[fieldName] !== null
-            ? JSON.stringify(item[fieldName])
-            : ""
-        )
-        .join(",")
-    );
-
-    return [header.join(","), ...rows].join("\n");
-  };
-
+  const existingRecordRef = useRef<any | undefined>(undefined);
   // Function to handle the recording process
   const handleRecord = async () => {
-    // Check if a device is connected
-    if (isConnected) {
-      // If recording is already in progress, stop it
-      if (isRecordingRef.current) {
-        stopRecording(); // Stop the recording if it is already on
-      } else {
-        isRecordingRef.current = true; // Start recording
-        const now = new Date();
-        startTimeRef.current = now.getTime();
-        setElapsedTime(0);
-        timerIntervalRef.current = setInterval(checkRecordingTime, 1000);
-
-        setrecData(true);
-
-        // Initialize IndexedDB for this recording session
-        try {
-          const db = await initIndexedDB(); // Attempt to initialize the IndexedDB
-          indexedDBRef.current = db; // Store the database connection in a ref for later use
-        } catch (error) {
-          // Handle any errors during the IndexedDB initialization
-          console.error("Failed to initialize IndexedDB:", error);
-          toast.error(
-            "Failed to initialize storage. Recording may not be saved."
-          );
-        }
-
-        // Start reading and saving data
-        recordingIntervalRef.current = setInterval(() => {
-          const data = bufferRef.current; // Use bufferRef which stores actual data
-          saveDataDuringRecording(data); // Save the data to IndexedDB
-          bufferRef.current = []; // Clear the buffer after saving
-        }, 1000); // Save data every 1 second or adjust the interval as needed
-      }
+    if (isRecordingRef.current) {
+      // Stop the recording if it is currently active
+      stopRecording();
     } else {
-      // Notify the user if no device is connected
-      toast.warning("No device is connected");
-    }
-  };
-
-  const checkRecordingTime = () => {
-    setElapsedTime((prev) => {
-      const newElapsedTime = prev + 1; // Increment the elapsed time by 1 second every second
-      if (endTimeRef.current !== null && newElapsedTime >= endTimeRef.current) {
-        stopRecording();
-        return endTimeRef.current;
-      }
-      return newElapsedTime;
-    });
-  };
-
-  const formatDuration = (durationInSeconds: number): string => {
-    const minutes = Math.floor(durationInSeconds / 60); // Get the minutes
-    const seconds = durationInSeconds % 60;
-    if (minutes === 0) {
-      return `${seconds} second${seconds !== 1 ? "s" : ""}`;
-    }
-    return `${minutes} minute${minutes !== 1 ? "s" : ""} ${seconds} second${
-      seconds !== 1 ? "s" : ""
-    }`;
-  };
-
-  // Updated stopRecording function
-  const stopRecording = async () => {
-    // Clear the timer if it is currently set
-    if (timerIntervalRef.current) {
-      clearInterval(timerIntervalRef.current);
-      timerIntervalRef.current = null;
-    }
-
-    const endTime = new Date(); // Capture the end time
-    const recordedFilesCount = (await getAllDataFromIndexedDB()).length;
-
-    // Check if startTimeRef.current is not null before using it
-    if (startTimeRef.current !== null) {
-      // Format the start and end times as readable strings
-      const startTimeString = new Date(
-        startTimeRef.current
-      ).toLocaleTimeString();
-      const endTimeString = endTime.toLocaleTimeString();
-
-      // Calculate the duration of the recording
-      const durationInSeconds = Math.floor(
-        (endTime.getTime() - startTimeRef.current) / 1000
-      );
-
-      // Close IndexedDB reference
-      if (indexedDBRef.current) {
-        indexedDBRef.current.close();
-        indexedDBRef.current = null; // Reset the reference
-      }
-
-      const allData = await getAllDataFromIndexedDB();
-      setHasData(allData.length > 0);
-
-      // Display the toast with all the details
-      toast.success("Recording completed successfully", {
-        description: (
-          <div>
-            <p>Start Time: {startTimeString}</p>
-            <p>End Time: {endTimeString}</p>
-            <p>Recording Duration: {formatDuration(durationInSeconds)}</p>
-            <p>Samples Recorded: {recordedFilesCount}</p>
-          </div>
-        ),
-      });
-    } else {
-      console.error("Start time is null. Unable to calculate duration.");
-      toast.error("Recording start time was not captured.");
-    }
-
-    // Reset the recording state
-    isRecordingRef.current = false;
-    setElapsedTime(0);
-    setrecData(false);
-    setIsRecordButtonDisabled(true);
-  };
-
-  // Call this function when your component mounts or when you suspect the data might change
-  useEffect(() => {
-    const checkDataAndConnection = async () => {
-      // Check if data exists in IndexedDB
-      const allData = await getAllDataFromIndexedDB();
-      setHasData(allData.length > 0);
-
-      // Disable the record button if there is data in IndexedDB and device is connected
-      setIsRecordButtonDisabled(allData.length > 0 || !isConnected);
-    };
-
-    checkDataAndConnection();
-  }, [isConnected]);
-
-  // Add this function to save data to IndexedDB during recording
-  const saveDataDuringRecording = async (data: string[][]) => {
-    if (!isRecordingRef.current || !indexedDBRef.current) return;
-  
-    try {
-      const tx = indexedDBRef.current.transaction(["adcReadings"], "readwrite");
-      const store = tx.objectStore("adcReadings");
-  
-      console.log(`Saving data for ${canvasCount} channels.`);
-  
-      for (const row of data) {
-        // Ensure all channels are present by filling missing values with null
-        const channels = row.slice(0, canvasCount).map((value) =>
-          value !== undefined ? Number(value) : null
-        );
-  
-        await store.add({
-          timestamp: new Date().toISOString(),
-          channels, // Save the array of channels
-          counter: Number(row[6]), // Adjust based on counter location
-        });
-      }
-    } catch (error) {
-      console.error("Error saving data during recording:", error);
-    }
-  };
-  
-  // Function to format time from seconds into a "MM:SS" string format
-  const formatTime = (seconds: number): string => {
-    // Calculate the number of minutes by dividing seconds by 60
-    const mins = Math.floor(seconds / 60);
-
-    // Calculate the remaining seconds after extracting minutes
-    const secs = seconds % 60;
-
-    // Return the formatted time string, ensuring two digits for minutes and seconds
-    return `${mins.toString().padStart(2, "0")}:${secs
-      .toString()
-      .padStart(2, "0")}`;
-  };
-
-  // Function to initialize the IndexedDB and return a promise with the database instance
-  const initIndexedDB = async (): Promise<IDBDatabase> => {
-    return new Promise((resolve, reject) => {
-      // Open a connection to the IndexedDB database named "adcReadings", version 1
-      const request = indexedDB.open("adcReadings", 1);
-
-      // Event handler for when the database needs to be upgraded (e.g., first creation)
-      request.onupgradeneeded = (event) => {
-        // Access the database instance from the event target
-        const db = (event.target as IDBOpenDBRequest).result;
-
-        // Create the object store "adcReadings" if it doesn't already exist
-        if (!db.objectStoreNames.contains("adcReadings")) {
-          const store = db.createObjectStore("adcReadings", {
-            keyPath: "id", // Set the key path for the object store
-            autoIncrement: true, // Enable auto-increment for the key
-          });
-          // Create an index for timestamps, allowing for easy querying
-          store.createIndex("timestamp", "timestamp", { unique: false });
-          // Create an index for channels, allowing for flexible data storage as an array
-          store.createIndex("channels", "channels", { unique: false });
-        }
-      };
-
-      // Event handler for successful opening of the database
-      request.onsuccess = () => {
-        resolve(request.result); // Resolve the promise with the database instance
-      };
-
-      // Event handler for any errors that occur during the request
-      request.onerror = () => {
-        reject(request.error); // Reject the promise with the error
-      };
-    });
-  };
-
-  // Delete all data from IndexedDB
-  const deleteDataFromIndexedDB = async () => {
-    try {
-      // Initialize the IndexedDB
-      const db = await initIndexedDB();
-
-      // Start a readwrite transaction on the "adcReadings" object store
-      const tx = db.transaction(["adcReadings"], "readwrite");
-      const store = tx.objectStore("adcReadings");
-
-      await store.clear();
-      console.log("All data deleted from IndexedDB");
-      toast.success("Recorded file is deleted.");
-
-      // Check if there is any data left in the database after deletion
-      const allData = await getAllDataFromIndexedDB();
-      setHasData(allData.length > 0);
-      setIsRecordButtonDisabled(false);
-    } catch (error) {
-      console.error("Error deleting data from IndexedDB:", error);
-      toast.error("Failed to delete data. Please try again.");
-    }
-  };
-
-  // Function to retrieve all data from the IndexedDB
-  const getAllDataFromIndexedDB = async (): Promise<any[]> => {
-    return new Promise(async (resolve, reject) => {
-      try {
-        // Initialize the IndexedDB
-        const db = await initIndexedDB();
-
-        // Start a readonly transaction on the "adcReadings" object store
-        const tx = db.transaction(["adcReadings"], "readonly");
-        const store = tx.objectStore("adcReadings"); // Access the object store
-
-        // Create a request to get all records from the store
-        const request = store.getAll();
-
-        // Event handler for successful retrieval of data
-        request.onsuccess = () => {
-          resolve(request.result); // Resolve the promise with the retrieved data
-        };
-
-        // Event handler for any errors that occur during the request
-        request.onerror = (error) => {
-          reject(error); // Reject the promise with the error
-        };
-      } catch (error) {
-        // Handle any errors that occur during IndexedDB initialization
-        reject(error); // Reject the promise with the initialization error
-      }
-    });
-  };
-
-  // Updated saveData function
-  const saveData = async () => {
-    try {
-      const allData = await getAllDataFromIndexedDB(); // Fetch data from IndexedDB
-  
-      if (allData.length === 0) {
-        toast.error("No data available to download.");
-        return;
-      }
-  
-      // Ensure all channel data is formatted properly and missing data is handled
-      const formattedData = allData.map((item) => {
-        const dynamicChannels: { [key: string]: number | null } = {};
-        
-        // Assume channels are stored as an array in `item.channels`
-        const channels = item.channels || [];
-  
-        // Loop through the channels array based on canvasCount
-        for (let i = 0; i < canvasCount; i++) {
-          const channelKey = `channel_${i + 1}`; // Create a dynamic key for each channel
-          dynamicChannels[channelKey] =
-            channels[i] !== undefined ? channels[i] : null; // Handle missing data
-        }
-  
-        return {
-          timestamp: item.timestamp,
-          ...dynamicChannels, // Spread the dynamic channels into the result object
-          counter: item.counter || null, // Include the counter if available
-        };
-      });
-  
-      // Convert the formatted data to CSV
-      const csvData = convertToCSV(formattedData);
-      const blob = new Blob([csvData], { type: "text/csv;charset=utf-8" });
-  
-      // Get the current date and time for the filename
+      // Start a new recording session
+      isRecordingRef.current = true;
       const now = new Date();
-      const formattedTimestamp = `${now.getFullYear()}-${String(
-        now.getMonth() + 1
-      ).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}_${String(
-        now.getHours()
-      ).padStart(2, "0")}-${String(now.getMinutes()).padStart(2, "0")}-${String(
-        now.getSeconds()
-      ).padStart(2, "0")}`;
-  
-      // Use the timestamp in the filename
-      const filename = `recorded_data_${formattedTimestamp}.csv`;
-      saveAs(blob, filename); // Trigger download
-  
-      // Delete the data from IndexedDB after saving
-      await deleteDataFromIndexedDB(); // Clear the IndexedDB
-      toast.success("Data downloaded and cleared from storage."); // Success notification
-  
-      // Check if any data remains after deletion
-      const remainingData = await getAllDataFromIndexedDB();
-      setHasData(remainingData.length > 0); // Update hasData state
-    } catch (error) {
-      console.error("Error saving data:", error);
-      toast.error("Failed to save data. Please try again.");
+      recordingStartTime.current = Date.now();
+      setRecordingElapsedTime(Date.now());
+      setIsRecordButtonDisabled(true);
+
+      const filename = `ChordsWeb-${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}-` +
+        `${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}${String(now.getSeconds()).padStart(2, '0')}.csv`;
+
+      currentFilenameRef.current = filename;
     }
   };
-  
+
+  const stopRecording = async () => {
+    if (!recordingStartTime) {
+      toast.error("Recording start time was not captured.");
+      return;
+    }
+    isRecordingRef.current = false;
+    setRecordingElapsedTime(0);
+    setIsRecordButtonDisabled(false);
+    // setRecordingStartTime(0);
+    recordingStartTime.current = 0;
+    existingRecordRef.current = undefined;
+    // Re-fetch datasets from IndexedDB after recording stops
+    const fetchData = async () => {
+      const data = await getFileCountFromIndexedDB();
+      setDatasets(data); // Update datasets with the latest data
+    };
+    // Call fetchData after stopping the recording
+    fetchData();
+  };
+
+  // Function to format time from seconds into a "MM:SS" string format
+  const formatTime = (milliseconds: number): string => {
+    const date = new Date(milliseconds);
+    const hours = String(date.getUTCHours()).padStart(2, '0');
+    const minutes = String(date.getUTCMinutes()).padStart(2, '0');
+    const seconds = String(date.getUTCSeconds()).padStart(2, '0');
+    return `${hours}:${minutes}:${seconds}`;
+  };
+
+  const deleteFilesByFilename = async (filename: string) => {
+    try {
+      const dbRequest = indexedDB.open("ChordsRecordings");
+
+      dbRequest.onsuccess = (event) => {
+        const db = (event.target as IDBOpenDBRequest).result;
+        const transaction = db.transaction("ChordsRecordings", "readwrite");
+        const store = transaction.objectStore("ChordsRecordings");
+
+        // Check if the "filename" index exists
+        if (!store.indexNames.contains("filename")) {
+          console.error("Index 'filename' does not exist.");
+          toast.error("Unable to delete files: index not found.");
+          return;
+        }
+
+        const index = store.index("filename");
+        const deleteRequest = index.openCursor(IDBKeyRange.only(filename));
+
+        // Make this callback async
+        deleteRequest.onsuccess = async (event) => {
+          const cursor = (event.target as IDBRequest<IDBCursorWithValue>).result;
+
+          if (cursor) {
+            cursor.delete(); // Delete the current record
+            // Fetch the updated data and update state
+            const data = await getFileCountFromIndexedDB();
+            setDatasets(data); // Update datasets with the latest data
+          } else {
+            console.log(`No file found with filename: ${filename}`);
+            toast.success("File deleted successfully.");
+          }
+        };
+
+        deleteRequest.onerror = () => {
+          console.error("Error during delete operation.");
+          toast.error("Failed to delete the file. Please try again.");
+        };
+
+        transaction.oncomplete = () => {
+          console.log("File deletion transaction completed.");
+        };
+
+        transaction.onerror = () => {
+          console.error("Transaction failed during deletion.");
+          toast.error("Failed to delete the file. Please try again.");
+        };
+      };
+
+      dbRequest.onerror = () => {
+        console.error("Failed to open IndexedDB database.");
+        toast.error("An error occurred while accessing the database.");
+      };
+    } catch (error) {
+      console.error("Error occurred during file deletion:", error);
+      toast.error("An unexpected error occurred. Please try again.");
+    }
+  };
+
+  // Function to delete all data from IndexedDB (for ZIP files or clear all)
+  const deleteAllDataFromIndexedDB = async () => {
+    return new Promise<void>((resolve, reject) => {
+      try {
+        const dbRequest = indexedDB.open("ChordsRecordings", 2);
+
+        dbRequest.onerror = (error) => {
+          console.error("Failed to open IndexedDB:", error);
+          reject(new Error("Failed to open database"));
+        };
+
+        dbRequest.onsuccess = (event) => {
+          const db = (event.target as IDBOpenDBRequest).result;
+
+          // Start a transaction and get the object store
+          const transaction = db.transaction(["ChordsRecordings"], "readwrite");
+          const store = transaction.objectStore("ChordsRecordings");
+
+          // Clear all records from the store
+          const clearRequest = store.clear();
+
+          clearRequest.onsuccess = () => {
+            // Close the database connection
+            db.close();
+
+            setDatasets([]);
+            setPopoverVisible(false);
+            toast.success("All files deleted successfully.");
+            resolve();
+          };
+
+          clearRequest.onerror = (error) => {
+            console.error("Failed to clear IndexedDB store:", error);
+            toast.error("Failed to delete all files. Please try again.");
+            reject(error);
+          };
+
+          transaction.onerror = (error) => {
+            console.error("Transaction failed:", error);
+            toast.error("Failed to delete all files. Please try again.");
+            reject(error);
+          };
+        };
+
+        dbRequest.onupgradeneeded = (event) => {
+          const db = (event.target as IDBOpenDBRequest).result;
+
+          // Create the object store if it doesn't exist
+          if (!db.objectStoreNames.contains("ChordsRecordings")) {
+            const store = db.createObjectStore("ChordsRecordings", {
+              keyPath: "filename",
+
+            });
+            store.createIndex("filename", "filename", { unique: false });
+
+          }
+        };
+
+      } catch (error) {
+        console.error("Error in deleteAllDataFromIndexedDB:", error);
+        reject(error);
+      }
+    });
+  };
 
   return (
-    <div className="flex items-center justify-center h-4 mb-2 px-4 z-50">
+    <div className="flex-none items-center justify-center pb-4 bg-g">
       {/* Left-aligned section */}
-      <div className="absolute left-4 flex items-center space-x-1">
+      <div className="absolute left-4 flex items-center mx-0 px-0 space-x-1">
         {isRecordingRef.current && (
-          <div className="flex items-center space-x-1 w-min ml-2">
-            <div className="font-medium p-2 w-16 inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm ring-offset-background transition-colors bg-primary text-destructive hover:bg-primary/90">
-              {formatTime(elapsedTime)}
-            </div>
-            <Separator orientation="vertical" className="bg-primary h-9 ml-2" />
+          <div className="flex items-center space-x-1 w-min">
+            <button className="flex items-center justify-center px-1 py-2   select-none min-w-20 bg-primary text-destructive whitespace-nowrap rounded-xl"
+            >
+              {formatTime(recordingElapsedTime)}
+            </button>
+            <Separator orientation="vertical" className="bg-primary h-9 " />
             <div>
               <Popover
                 open={isEndTimePopoverOpen}
@@ -735,7 +927,7 @@ const Connection: React.FC<ConnectionProps> = ({
               >
                 <PopoverTrigger asChild>
                   <Button
-                    className="text-lg w-16 h-9 font-medium p-2"
+                    className="flex items-center justify-center px-1 py-2   select-none min-w-10  text-destructive whitespace-nowrap rounded-xl"
                     variant="destructive"
                   >
                     {endTimeRef.current === null ? (
@@ -795,12 +987,12 @@ const Connection: React.FC<ConnectionProps> = ({
       </div>
 
       {/* Center-aligned buttons */}
-      <div className="flex gap-3 items-center">
+      <div className="flex gap-3 items-center justify-center">
         {/* Connection button with tooltip */}
         <TooltipProvider>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button className="bg-primary gap-2" onClick={handleClick}>
+              <Button className="flex items-center justify-center gap-1 py-2 px-2 sm:py-3 sm:px-4 rounded-xl font-semibold" onClick={handleClick}>
                 {isConnected ? (
                   <>
                     Disconnect
@@ -819,85 +1011,115 @@ const Connection: React.FC<ConnectionProps> = ({
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
-
         {/* Autoscale/Bit selection */}
         {isConnected && (
           <TooltipProvider>
             <Tooltip>
-              <TooltipTrigger asChild>
-                {ifBits ? (
-                  <Button
-                    variant={selectedBits === "auto" ? "default" : "outline"}
-                    className="w-36 flex justify-center items-center overflow-hidden p-0 m-0 select-none"
-                    onClick={() =>
-                      setSelectedBits(selectedBits === "auto" ? ifBits : "auto")
-                    }
-                    aria-label="Toggle Autoscale"
-                    disabled={!isDisplay}
-                  >
-                    Autoscale
-                  </Button>
-                ) : (
-                  <Select
-                    onValueChange={(value) =>
-                      setSelectedBits(value as BitSelection)
-                    }
-                    value={selectedBits}
-                    disabled={!isDisplay}
-                  >
-                    <SelectTrigger className="w-32 p-0 m-0">
-                      <SelectValue placeholder="Select bits" />
-                    </SelectTrigger>
-                    <SelectContent side="top">
-                      <SelectItem value="ten">10 bits</SelectItem>
-                      <SelectItem value="twelve">12 bits</SelectItem>
-                      <SelectItem value="fourteen">14 bits</SelectItem>
-                      <SelectItem value="auto">Auto Scale</SelectItem>
-                    </SelectContent>
-                  </Select>
-                )}
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>
-                  {selectedBits === "auto"
-                    ? "Auto Scaling Enabled"
-                    : "Manual Bit Selection"}
-                </p>
-              </TooltipContent>
+              <div className="flex items-center mx-0 px-0">
+                {/* Decrease Canvas Button */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      className="rounded-xl rounded-r-none"
+                      onClick={decreaseZoom}
+                      disabled={Zoom === 1}
+                    >
+                      <ZoomOut size={16} />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>{Zoom === 1 ? "We can't shrinkage" : "Decrease Zoom"}</p>
+                  </TooltipContent>
+                </Tooltip>
+
+                <Separator orientation="vertical" className="h-full" />
+
+                {/* Toggle All Channels Button */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      className="flex items-center justify-center px-3 py-2  rounded-none select-none min-w-12"
+                      onClick={toggleZoom}
+                    >
+                      {Zoom}x
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>{FullZoom ? "Remove Full Zoom" : "Full Zoom"}</p>
+                  </TooltipContent>
+                </Tooltip>
+
+                <Separator orientation="vertical" className="h-full" />
+
+                {/* Increase Canvas Button */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      className="rounded-xl rounded-l-none"
+                      onClick={increaseZoom}
+                      disabled={Zoom === 10}
+
+                    >
+                      <ZoomIn size={16} />
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>
+                      {Zoom >= 10 ? "Maximum Zoom Reached" : "Increase Zoom"}
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </div>
             </Tooltip>
           </TooltipProvider>
         )}
-
         {/* Display (Play/Pause) button with tooltip */}
         {isConnected && (
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button onClick={() => setIsDisplay(!isDisplay)}>
-                  {isDisplay ? (
-                    <Pause className="h-5 w-5" />
-                  ) : (
-                    <Play className="h-5 w-5" />
-                  )}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>
-                  {isDisplay ? "Pause Data Display" : "Resume Data Display"}
-                </p>
-              </TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        )}
+          <div className="flex items-center gap-0.5 mx-0 px-0">
+            <Button
+              className="rounded-xl rounded-r-none"
+              onClick={handlePrevSnapshot}
+              disabled={isDisplay || clickCount >= enabledClicks}
 
+            >
+              <ArrowLeftToLine size={16} />
+            </Button>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button className="rounded-xl rounded-l-none rounded-r-none" onClick={togglePause}>
+                    {isDisplay ? (
+                      <Pause className="h-5 w-5" />
+                    ) : (
+                      <Play className="h-5 w-5" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  <p>
+                    {isDisplay ? "Pause Data Display" : "Resume Data Display"}
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+            <Button
+              className="rounded-xl rounded-l-none"
+              onClick={handleNextSnapshot}
+              disabled={isDisplay || clickCount == 0}
+            >
+              <ArrowRightToLine size={16} />
+            </Button>
+          </div>
+        )}
         {/* Record button with tooltip */}
         {isConnected && (
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
                 <Button
+                  className="rounded-xl"
                   onClick={handleRecord}
-                  disabled={isRecordButtonDisabled || !isDisplay}
+
                 >
                   {isRecordingRef.current ? (
                     <CircleStop />
@@ -921,75 +1143,310 @@ const Connection: React.FC<ConnectionProps> = ({
         {isConnected && (
           <TooltipProvider>
             <div className="flex">
-              {hasData && datasets.length === 1 && (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      className="rounded-r-none"
-                      onClick={saveData}
-                      disabled={!hasData}
-                    >
-                      <Download size={16} className="mr-1" />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p>Save Data as CSV</p>
-                  </TooltipContent>
-                </Tooltip>
-              )}
+              <Popover>
+                <PopoverTrigger asChild>
+                  <Button className="rounded-xl p-4">
+                    <FileArchive size={16} />
+                  </Button>
+                </PopoverTrigger>
+                <PopoverContent className="p-4 bg-white shadow-lg rounded-xl w-full">
+                  <div className="space-y-4">
+                    {/* List each file with download and delete actions */}
+                    {datasets.length > 0 ? (
+                      datasets.map((dataset) => (
+                        <div key={dataset} className="flex justify-between items-center">
+                          {/* Display the filename directly */}
+                          <span className="font-medium mr-4 text-black">
+                            {dataset}
+                          </span>
 
-              <Separator orientation="vertical" className="h-full" />
+                          <div className="flex space-x-2">
+                            {/* Save file by filename */}
+                            <Button
+                              onClick={() => saveDataByFilename(dataset, canvasCount)}
+                              className="rounded-xl px-4"
+                            >
+                              <Download size={16} />
+                            </Button>
 
-              {hasData && datasets.length === 1 ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <Button
-                      className="rounded-l-none"
-                      onClick={deleteDataFromIndexedDB}
-                      disabled={!hasData}
-                    >
-                      <Trash2 size={20} />
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    <p>Delete Data</p>
-                  </TooltipContent>
-                </Tooltip>
-              ) : (
-                <>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        className="rounded-r-none mr-1"
-                        onClick={saveData}
-                        disabled={!hasData}
-                      >
-                        <Download size={16} />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p>Save Data as Zip</p>
-                    </TooltipContent>
-                  </Tooltip>
+                            {/* Delete file by filename */}
+                            <Button
+                              onClick={() => {
+                                deleteFilesByFilename(dataset);
+                              }}
+                              className="rounded-xl px-4"
+                            >
+                              <Trash2 size={16} />
+                            </Button>
 
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        className="rounded-l-none"
-                        onClick={deleteDataFromIndexedDB}
-                        disabled={!hasData}
-                      >
-                        <Trash2 size={20} />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>
-                      <p>Delete All Data</p>
-                    </TooltipContent>
-                  </Tooltip>
-                </>
-              )}
+                          </div>
+                        </div>
+                      ))
+                    ) : (
+                      <p className="text-black ">No datasets available</p>
+                    )}
+
+
+                    {/* Download all as ZIP and delete all options */}
+                    {datasets.length > 0 && (
+                      <div className="flex justify-between mt-4">
+                        <Button
+                          onClick={saveAllDataAsZip}
+                          className="rounded-xl p-2 w-full mr-2"
+                        >
+                          Download All as Zip
+                        </Button>
+                        <Button
+                          onClick={deleteAllDataFromIndexedDB}
+                          className="rounded-xl p-2 w-full"
+                        >
+                          Delete All
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                </PopoverContent>
+              </Popover>
             </div>
           </TooltipProvider>
+        )}
+
+        {isConnected && (
+          <Popover
+            open={isFilterPopoverOpen}
+            onOpenChange={setIsFilterPopoverOpen}
+          >
+            <PopoverTrigger asChild>
+              <Button
+                className="flex items-center justify-center px-3 py-2 select-none min-w-12 whitespace-nowrap rounded-xl"
+                disabled={!isDisplay}
+
+              >
+                Filter
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-50 p-4 mx-4 mb-2">
+              <div className="flex flex-col ">
+                <div className="flex items-center pb-2 ">
+                  {/* Filter Name */}
+                  <div className="text-sm font-semibold w-12"><ReplaceAll size={20} /></div>
+                  {/* Buttons */}
+                  <div className="flex space-x-2">
+                    <div className="flex items-center border border-input rounded-xl mx-0 px-0">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => removeEXGFilterFromAllChannels([0, 1, 2, 3, 4, 5])}
+                        className={`rounded-xl rounded-r-none border-0
+                        ${Object.keys(appliedEXGFiltersRef.current).length === 0
+                            ? "bg-red-700 hover:bg-white-500 hover:text-white text-white" // Disabled background
+                            : "bg-white-500" // Active background
+                          }`}
+                      >
+                        <CircleOff size={17} />
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => applyEXGFilterToAllChannels([0, 1, 2, 3, 4, 5], 4)}
+                        className={`flex items-center justify-center px-3 py-2 rounded-none select-none border-0
+                        ${Object.keys(appliedEXGFiltersRef.current).length === 6 && Object.values(appliedEXGFiltersRef.current).every((value) => value === 4)
+                            ? "bg-green-700 hover:bg-white-500 text-white hover:text-white" // Disabled background
+                            : "bg-white-500" // Active background
+                          }`}
+                      >
+                        <BicepsFlexed size={17} />
+                      </Button> <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => applyEXGFilterToAllChannels([0, 1, 2, 3, 4, 5], 3)}
+                        className={`flex items-center justify-center px-3 py-2 rounded-none select-none border-0
+                        ${Object.keys(appliedEXGFiltersRef.current).length === 6 && Object.values(appliedEXGFiltersRef.current).every((value) => value === 3)
+                            ? "bg-green-700 hover:bg-white-500 text-white hover:text-white" // Disabled background
+                            : "bg-white-500" // Active background
+                          }`}
+                      >
+                        <Brain size={17} />
+                      </Button> <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => applyEXGFilterToAllChannels([0, 1, 2, 3, 4, 5], 1)}
+                        className={`flex items-center justify-center px-3 py-2 rounded-none select-none border-0
+                        ${Object.keys(appliedEXGFiltersRef.current).length === 6 && Object.values(appliedEXGFiltersRef.current).every((value) => value === 1)
+                            ? "bg-green-700 hover:bg-white-500 text-white hover:text-white" // Disabled background
+                            : "bg-white-500" // Active background
+                          }`}
+                      >
+                        <Heart size={17} />
+                      </Button> <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => applyEXGFilterToAllChannels([0, 1, 2, 3, 4, 5], 2)}
+                        className={`rounded-xl rounded-l-none border-0
+                        ${Object.keys(appliedEXGFiltersRef.current).length === 6 && Object.values(appliedEXGFiltersRef.current).every((value) => value === 2)
+                            ? "bg-green-700 hover:bg-white-500 text-white hover:text-white" // Disabled background
+                            : "bg-white-500" // Active background
+                          }`}
+                      >
+                        <Eye size={17} />
+                      </Button>
+                    </div>
+                    <div className="flex border border-input rounded-xl items-center mx-0 px-0">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => removeNotchFromAllChannels([0, 1, 2, 3, 4, 5])}
+                        className={`rounded-xl rounded-r-none border-0
+                          ${Object.keys(appliedFiltersRef.current).length === 0
+                            ? "bg-red-700 hover:bg-white-500 hover:text-white text-white" // Disabled background
+                            : "bg-white-500" // Active background
+                          }`}
+                      >
+                        <CircleOff size={17} />
+                      </Button>
+
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => applyFilterToAllChannels([0, 1, 2, 3, 4, 5], 1)}
+                        className={`flex items-center justify-center px-3 py-2 rounded-none select-none border-0
+                          ${Object.keys(appliedFiltersRef.current).length === 6 && Object.values(appliedFiltersRef.current).every((value) => value === 1)
+                            ? "bg-green-700 hover:bg-white-500 text-white hover:text-white" // Disabled background
+                            : "bg-white-500" // Active background
+                          }`}
+                      >
+                        50Hz
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => applyFilterToAllChannels([0, 1, 2, 3, 4, 5], 2)}
+                        className={`rounded-xl rounded-l-none border-0
+                          ${Object.keys(appliedFiltersRef.current).length === 6 && Object.values(appliedFiltersRef.current).every((value) => value === 2)
+                            ? "bg-green-700 hover:bg-white-500 text-white hover:text-white" // Disabled background
+                            : "bg-white-500" // Active background
+                          }`}
+                      >
+                        60Hz
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex flex-col space-y-2">
+                  {["CH1", "CH2", "CH3", "CH4", "CH5", "CH6"].map((filterName, index) => (
+                    <div key={filterName} className="flex items-center">
+                      {/* Filter Name */}
+                      <div className="text-sm font-semibold w-12">{filterName}</div>
+                      {/* Buttons */}
+                      <div className="flex space-x-2">
+                        <div className="flex border border-input rounded-xl items-center mx-0 px-0">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => removeEXGFilter(index)}
+                            className={`rounded-xl rounded-r-none border-l-none border-0
+                              ${appliedEXGFiltersRef.current[index] === undefined
+                                ? "bg-red-700 hover:bg-white-500 hover:text-white text-white" // Disabled background
+                                : "bg-white-500" // Active background
+                              }`}
+                          >
+                            <CircleOff size={17} />
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleFrequencySelectionEXG(index, 4)}
+                            className={`flex items-center justify-center px-3 py-2 rounded-none select-none border-0
+                              ${appliedEXGFiltersRef.current[index] === 4
+                                ? "bg-green-700 hover:bg-white-500 text-white hover:text-white" // Disabled background
+                                : "bg-white-500" // Active background
+                              }`}
+                          >
+                            <BicepsFlexed size={17} />
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleFrequencySelectionEXG(index, 3)}
+                            className={`flex items-center justify-center px-3 py-2 rounded-none select-none border-0
+                              ${appliedEXGFiltersRef.current[index] === 3
+                                ? "bg-green-700 hover:bg-white-500 text-white hover:text-white" // Disabled background
+                                : "bg-white-500" // Active background
+                              }`}
+                          >
+                            <Brain size={17} />
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleFrequencySelectionEXG(index, 1)}
+                            className={`flex items-center justify-center px-3 py-2 rounded-none select-none border-0
+                              ${appliedEXGFiltersRef.current[index] === 1
+                                ? "bg-green-700 hover:bg-white-500 text-white hover:text-white" // Disabled background
+                                : "bg-white-500" // Active background
+                              }`}
+                          >
+                            <Heart size={17} />
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleFrequencySelectionEXG(index, 2)}
+                            className={`rounded-xl rounded-l-none border-0
+                                      ${appliedEXGFiltersRef.current[index] === 2
+                                ? "bg-green-700 hover:bg-white-500 text-white hover:text-white" // Disabled background
+                                : "bg-white-500" // Active background
+                              }`}
+                          >
+                            <Eye size={17} />
+                          </Button>
+                        </div>
+                        <div className="flex border border-input rounded-xl items-center mx-0 px-0">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => removeNotchFilter(index)}
+                            className={`rounded-xl rounded-r-none border-0
+                              ${appliedFiltersRef.current[index] === undefined
+                                ? "bg-red-700 hover:bg-white-500 hover:text-white text-white" // Disabled background
+                                : "bg-white-500" // Active background
+                              }`}
+                          >
+                            <CircleOff size={17} />
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleFrequencySelection(index, 1)}
+                            className={`flex items-center justify-center px-3 py-2 rounded-none select-none border-0
+                              ${appliedFiltersRef.current[index] === 1
+                                ? "bg-green-700 hover:bg-white-500 text-white hover:text-white" // Disabled background
+                                : "bg-white-500" // Active background
+                              }`}
+                          >
+                            50Hz
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleFrequencySelection(index, 2)}
+                            className={
+                              `rounded-xl rounded-l-none border-0 ${appliedFiltersRef.current[index] === 2
+                                ? "bg-green-700 hover:bg-white-500 text-white hover:text-white "
+                                : "bg-white-500 animate-fade-in-right"
+                              }`
+                            }
+                          >
+                            60Hz
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </PopoverContent>
+          </Popover>
         )}
 
         {/* Canvas control buttons with tooltip */}
@@ -1001,9 +1458,9 @@ const Connection: React.FC<ConnectionProps> = ({
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
-                      className="rounded-r-none"
+                      className="rounded-xl rounded-r-none"
                       onClick={decreaseCanvas}
-                      disabled={canvasCount === 1 || !isDisplay || recData}
+                      disabled={canvasCount === 1 || !isDisplay || isRecordButtonDisabled}
                     >
                       <Minus size={16} />
                     </Button>
@@ -1023,9 +1480,9 @@ const Connection: React.FC<ConnectionProps> = ({
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
-                      className="flex items-center justify-center px-3 py-2 m-1 rounded-none select-none"
+                      className="flex items-center justify-center px-3 py-2 rounded-none select-none"
                       onClick={toggleShowAllChannels}
-                      disabled={!isDisplay || recData}
+                      disabled={!isDisplay || isRecordButtonDisabled}
                     >
                       CH
                     </Button>
@@ -1045,20 +1502,68 @@ const Connection: React.FC<ConnectionProps> = ({
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
-                      className="rounded-l-none"
+                      className="rounded-xl rounded-l-none"
                       onClick={increaseCanvas}
-                      disabled={canvasCount >= 6 || !isDisplay || recData}
+                      disabled={canvasCount >= (detectedBitsRef.current == "twelve" ? 3 : 6) || !isDisplay || isRecordButtonDisabled}
                     >
                       <Plus size={16} />
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>
                     <p>
-                      {canvasCount >= 6
+                      {canvasCount >= (detectedBitsRef.current == "twelve" ? 3 : 6)
                         ? "Maximum Channels Reached"
                         : "Increase Channel"}
                     </p>
                   </TooltipContent>
+                </Tooltip>
+              </div>
+            </Tooltip>
+          </TooltipProvider>
+        )}
+        {isConnected && (
+          <TooltipProvider>
+            <Tooltip>
+              <div className="flex items-center mx-0 px-0">
+                {/* Decrease Current Value */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      className="rounded-xl rounded-r-none"
+                      onClick={decreaseValue}
+                      disabled={currentValue == 1}
+                    >
+                      <Minus size={16} />
+                    </Button>
+                  </TooltipTrigger>
+                </Tooltip>
+
+                <Separator orientation="vertical" className="h-full" />
+
+                {/* Toggle All Channels Button */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      className="flex items-center justify-center px-3 py-2 rounded-none select-none"
+                    >
+                      {currentValue} Sec
+                    </Button>
+                  </TooltipTrigger>
+                </Tooltip>
+
+                <Separator orientation="vertical" className="h-full" />
+
+                {/* Increase Canvas Button */}
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      className="rounded-xl rounded-l-none"
+                      onClick={increaseValue}
+                      disabled={currentValue >= 10}
+                    >
+                      <Plus size={16} />
+                    </Button>
+                  </TooltipTrigger>
                 </Tooltip>
               </div>
             </Tooltip>
@@ -1070,3 +1575,4 @@ const Connection: React.FC<ConnectionProps> = ({
 };
 
 export default Connection;
+
